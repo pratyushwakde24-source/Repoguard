@@ -8,6 +8,14 @@
     "server": "tsx server/index.ts",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test": "node scripts/runTests.cjs",
+    "test:step2": "node tests/test_step2_e2e.cjs",
+    "test:step3": "node tests/test_step3_e2e.cjs",
+    "test:step4": "node tests/test_step4_e2e.cjs",
+    "test:step5": "node tests/test_step5_e2e.cjs",
+    "test:step6": "node tests/test_step6_e2e.cjs",
+    "test:step7": "node tests/test_step7_e2e.cjs",
+    "test:step8": "node tests/test_step8_e2e.cjs",
     "preview": "vite preview"
   },
   "dependencies": {
