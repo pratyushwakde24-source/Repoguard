@@ -143,11 +143,49 @@ CREATE TABLE IF NOT EXISTS security_alerts (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Repository Reliability Memory (Structured Historical Memory for Autonomous Agent)
+CREATE TABLE IF NOT EXISTS repository_reliability_memory (
+  id VARCHAR(64) PRIMARY KEY,
+  repository_id VARCHAR(64) REFERENCES repositories(id) ON DELETE CASCADE,
+  github_repository_id BIGINT,
+  repository_full_name VARCHAR(255) NOT NULL,
+  incident_id VARCHAR(64) REFERENCES incidents(id) ON DELETE CASCADE,
+  agent_run_id VARCHAR(64),
+  workflow_name VARCHAR(100),
+  failure_signature TEXT,
+  error_type VARCHAR(100),
+  root_cause_status VARCHAR(30) NOT NULL,
+  root_cause_summary TEXT NOT NULL,
+  evidence_summary TEXT,
+  relevant_files JSONB DEFAULT '[]'::jsonb,
+  changed_files JSONB DEFAULT '[]'::jsonb,
+  patch_status VARCHAR(30),
+  test_status VARCHAR(30),
+  verification_status VARCHAR(30),
+  delivery_status VARCHAR(30),
+  repair_outcome VARCHAR(50) NOT NULL,
+  repair_success BOOLEAN DEFAULT false,
+  human_review_required BOOLEAN DEFAULT false,
+  commit_sha VARCHAR(40),
+  repair_branch VARCHAR(100),
+  pull_request_number INT,
+  pull_request_url VARCHAR(255),
+  is_demo BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_repo_rel_memory_repo ON repository_reliability_memory (repository_full_name);
+CREATE INDEX IF NOT EXISTS idx_repo_rel_memory_err ON repository_reliability_memory (error_type);
+CREATE INDEX IF NOT EXISTS idx_repo_rel_memory_success ON repository_reliability_memory (repair_success);
+CREATE INDEX IF NOT EXISTS idx_repo_rel_memory_created ON repository_reliability_memory (created_at DESC);
+
 -- Enable Realtime for key tables
 ALTER PUBLICATION supabase_realtime ADD TABLE agent_runs;
 ALTER PUBLICATION supabase_realtime ADD TABLE agent_steps;
 ALTER PUBLICATION supabase_realtime ADD TABLE activity_events;
 ALTER PUBLICATION supabase_realtime ADD TABLE incidents;
+ALTER PUBLICATION supabase_realtime ADD TABLE repository_reliability_memory;
 
 -- Enable RLS Policies (Allow read/write for demo authenticated & anon clients)
 ALTER TABLE repositories ENABLE ROW LEVEL SECURITY;
@@ -158,6 +196,7 @@ ALTER TABLE activity_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE test_results ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pull_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE security_alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE repository_reliability_memory ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow public read/write on repositories" ON repositories FOR ALL USING (true);
 CREATE POLICY "Allow public read/write on incidents" ON incidents FOR ALL USING (true);
@@ -167,3 +206,5 @@ CREATE POLICY "Allow public read/write on activity_events" ON activity_events FO
 CREATE POLICY "Allow public read/write on test_results" ON test_results FOR ALL USING (true);
 CREATE POLICY "Allow public read/write on pull_requests" ON pull_requests FOR ALL USING (true);
 CREATE POLICY "Allow public read/write on security_alerts" ON security_alerts FOR ALL USING (true);
+CREATE POLICY "Allow public read/write on repository_reliability_memory" ON repository_reliability_memory FOR ALL USING (true);
+

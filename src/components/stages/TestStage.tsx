@@ -5,7 +5,14 @@ export default function TestStage({ incident }: { incident?: any }) {
   const patchData = incident?.patch_data
   const commitSha = testData?.base_sha || incident?.commit_sha || 'a1b2c3d'
 
-  const rawStatus = testData?.test_status || (patchData?.patch_status === 'generated' ? 'running' : 'requires_human_review')
+  const isHumanReviewPending = incident?.human_review_status === 'PENDING' ||
+    (incident?.repair_plan_data?.requires_human_review === true && incident?.human_review_status !== 'APPROVED') ||
+    (incident?.risk_assessment?.decision === 'BLOCKED' && incident?.human_review_status !== 'APPROVED') ||
+    incident?.requires_human_review === true
+
+  const rawStatus = isHumanReviewPending
+    ? 'requires_human_review'
+    : (testData?.test_status || (patchData?.patch_status === 'generated' && incident?.human_review_status === 'APPROVED' ? 'running' : 'requires_human_review'))
 
   const statusLabelMap: Record<string, string> = {
     passed: 'PASSED',

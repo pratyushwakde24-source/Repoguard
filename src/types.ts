@@ -3,7 +3,7 @@
 export type AgentStage = 'DETECT' | 'INSPECT' | 'PLAN' | 'REASON' | 'PATCH' | 'TEST' | 'VERIFY' | 'DELIVER'
 export type IncidentSeverity = 'critical' | 'high' | 'medium' | 'low'
 export type IncidentStatus = 'open' | 'investigating' | 'healing' | 'resolved' | 'requires_review'
-export type RunStatus = 'running' | 'completed' | 'failed' | 'requires_review'
+export type RunStatus = 'running' | 'completed' | 'failed' | 'requires_review' | 'requires_human_review' | 'verified'
 export type TestStatus = 'pending' | 'running' | 'passed' | 'failed'
 export type NodeHealth = 'healthy' | 'warning' | 'failed' | 'investigating'
 
@@ -180,12 +180,106 @@ export interface DeliveryData {
   commit_sha?: string
   pr_number?: number
   pr_url?: string
+  pr_node_id?: string
   changed_files: string[]
   patch_identity?: string
   failure_reason?: string
   summary?: string
   created_at: string
   updated_at: string
+}
+
+export interface ReliabilityMemoryItem {
+  id: string
+  repository_id?: string
+  github_repository_id?: number
+  repository_full_name: string
+  incident_id?: string
+  agent_run_id?: string
+  workflow_name?: string
+  failure_signature?: string
+  error_type?: string
+  root_cause_status: 'verified' | 'likely' | 'uncertain' | 'disproven'
+  root_cause_summary: string
+  evidence_summary?: string
+  relevant_files: string[]
+  changed_files: string[]
+  patch_status?: 'generated' | 'rejected' | 'requires_human_review'
+  test_status?: 'passed' | 'failed' | 'setup_failed' | 'timed_out' | 'requires_human_review'
+  verification_status?: 'verified' | 'failed' | 'requires_human_review'
+  delivery_status?: string
+  repair_outcome: 'verified_repair' | 'blocked_human_review' | 'test_failed' | 'verification_failed' | 'unauthorized_scope'
+  repair_success: boolean
+  human_review_required: boolean
+  commit_sha?: string
+  repair_branch?: string
+  pull_request_number?: number
+  pull_request_url?: string
+  is_demo?: boolean
+  created_at: string
+  updated_at?: string
+}
+
+export interface MemoryMatchSignal {
+  name: string
+  matched: boolean
+  description: string
+}
+
+export interface MemoryRetrievalResult {
+  relevance_level: 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE'
+  relevance_score: number
+  matched_count: number
+  memories: ReliabilityMemoryItem[]
+  matches?: ReliabilityMemoryItem[]
+  signals: MemoryMatchSignal[]
+  summary: string
+}
+
+export interface RiskSignalItem {
+  name: string
+  status: 'passed' | 'warning' | 'failed'
+  value: string
+  is_blocking: boolean
+}
+
+export interface RiskAssessment {
+  risk_level: 'LOW' | 'MEDIUM' | 'HIGH'
+  risk_score: number // 0-100
+  decision: 'AUTHORIZED' | 'BLOCKED'
+  autonomous_repair_allowed: boolean
+  requires_human_review: boolean
+  blocking_reasons: string[]
+  signals: {
+    root_cause_status: string
+    root_cause_verified: boolean
+    patch_scope_files: number
+    patch_scope_bounded: boolean
+    file_sensitivity_level: 'none' | 'moderate' | 'high'
+    sensitive_files_detected: string[]
+    dependency_changes_detected: boolean
+    dependency_files: string[]
+    historical_match_relevance: 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE'
+    historical_verified_repairs: number
+    sha_consistent: boolean
+    evidence_complete: boolean
+    signal_items: RiskSignalItem[]
+  }
+  summary: string
+  evaluated_at: string
+}
+
+export interface HumanReviewData {
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'INVALIDATED' | 'NOT_REQUIRED'
+  decision: 'APPROVED' | 'REJECTED' | null
+  reviewed_at?: string
+  reviewed_by?: string
+  note?: string
+  revalidation_result?: {
+    passed: boolean
+    rechecked_at: string
+    details: string[]
+  }
 }
 
 export interface Incident {
@@ -209,13 +303,27 @@ export interface Incident {
   github_verified?: boolean
   inspection_data?: any
   repair_plan_data?: any
+  reliability_memory?: MemoryRetrievalResult
+  risk_assessment?: RiskAssessment
   patch_data?: PatchData
   test_data?: TestData
   verification_data?: VerificationData
   delivery_data?: DeliveryData
+  human_review?: HumanReviewData
+  human_review_status?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'INVALIDATED' | 'NOT_REQUIRED'
+  human_reviewed_at?: string
+  human_reviewed_by?: string
+  human_review_note?: string
+  human_review_decision?: 'APPROVED' | 'REJECTED'
+  risk_score?: number
+  root_cause_status?: string
+  confidence?: number
+  evidence_count?: number
+  active_run?: AgentRun
   created_at: string
   resolved_at?: string
 }
+
 
 
 export interface AgentRun {
@@ -230,6 +338,8 @@ export interface AgentRun {
   completed_at?: string
   duration_ms: number
   error?: string
+  error_code?: string
+  error_message?: string
 }
 
 export interface AgentStep {

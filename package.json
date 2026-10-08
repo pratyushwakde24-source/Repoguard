@@ -16,6 +16,11 @@
     "test:step6": "node tests/test_step6_e2e.cjs",
     "test:step7": "node tests/test_step7_e2e.cjs",
     "test:step8": "node tests/test_step8_e2e.cjs",
+    "test:step9": "node tests/test_step9_memory_e2e.cjs",
+    "test:step10": "node tests/test_step10_risk_e2e.cjs",
+    "test:hardstop": "node tests/test_human_review_pipeline_hard_stop.cjs",
+    "test:sequential": "node tests/test_sequential_pipeline_execution.cjs",
+    "test:target-validation": "node tests/test_patch_target_file_validation.cjs",
     "preview": "vite preview"
   },
   "dependencies": {

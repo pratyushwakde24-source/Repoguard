@@ -1,11 +1,19 @@
 import { useState } from 'react'
+import HumanVerificationPanel from '../HumanVerificationPanel'
 
-export default function PatchStage({ incident }: { incident?: any }) {
+export default function PatchStage({ incident, onIncidentUpdate }: { incident?: any; onIncidentUpdate?: (inc: any) => void }) {
   const patchData = incident?.patch_data
   const repairPlan = incident?.repair_plan_data
   const commitSha = patchData?.base_sha || incident?.commit_sha || 'a1b2c3d'
 
-  const rawStatus = patchData?.patch_status || (repairPlan?.root_cause_status === 'verified' ? 'generating' : 'requires_human_review')
+  const isHumanReviewPending = incident?.human_review_status === 'PENDING' ||
+    (incident?.repair_plan_data?.requires_human_review === true && incident?.human_review_status !== 'APPROVED') ||
+    (incident?.risk_assessment?.decision === 'BLOCKED' && incident?.human_review_status !== 'APPROVED') ||
+    incident?.requires_human_review === true
+
+  const rawStatus = isHumanReviewPending
+    ? 'requires_human_review'
+    : (patchData?.patch_status || (repairPlan?.root_cause_status === 'verified' && incident?.human_review_status === 'APPROVED' ? 'generated' : 'requires_human_review'))
 
   const statusLabelMap: Record<string, string> = {
     generated: 'GENERATED',
@@ -94,15 +102,20 @@ export default function PatchStage({ incident }: { incident?: any }) {
 
       {/* Warning/Halt Banner if Status is not generated */}
       {rawStatus !== 'generated' && (
-        <div className="bg-error-container/30 border border-error/40 rounded-xl p-4 flex items-center gap-3 text-error">
-          <span className="material-symbols-outlined text-[24px]">shield_lock</span>
-          <div className="flex flex-col gap-0.5">
-            <span className="text-headline-sm font-bold">PATCH GENERATION HALTED / HUMAN REVIEW REQUIRED</span>
-            <span className="text-body-sm text-on-error-container">
-              {patchData?.rejection_reason || 'Autonomous patch generation requires a VERIFIED root cause and all safety gates passing.'}
-            </span>
+        <>
+          <div className="bg-error-container/30 border border-error/40 rounded-xl p-4 flex items-center gap-3 text-error">
+            <span className="material-symbols-outlined text-[24px]">shield_lock</span>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-headline-sm font-bold">PATCH GENERATION HALTED / HUMAN REVIEW REQUIRED</span>
+              <span className="text-body-sm text-on-error-container">
+                {patchData?.rejection_reason || 'Autonomous patch generation requires a VERIFIED root cause and all safety gates passing.'}
+              </span>
+            </div>
           </div>
-        </div>
+
+          {/* HUMAN VERIFICATION PANEL */}
+          <HumanVerificationPanel incident={incident} onStatusChange={onIncidentUpdate} />
+        </>
       )}
 
       {/* Main Grid Layout */}

@@ -286,7 +286,7 @@ export default defineConfig({
   console.log('========================================');
 
   const testRunId = Math.floor(Math.random() * 9000000) + 1000000;
-  const realCommitSha = '6f69df453ce7b65977ff21f3d90c0b6dd67f40f6';
+  const realCommitSha = crypto.randomBytes(20).toString('hex');
 
   const payloadFail = {
     action: 'completed',

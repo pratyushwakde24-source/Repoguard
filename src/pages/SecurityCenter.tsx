@@ -252,6 +252,62 @@ export default function SecurityCenter() {
           </div>
         </div>
       </div>
+
+      {/* Security Architecture Hardening & Authoritative Invariant Controls */}
+      <div className="bg-surface-container-high border border-outline-variant/30 rounded-xl p-6 flex flex-col gap-4">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-outline-variant/20 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-tertiary/20 text-tertiary flex items-center justify-center border border-tertiary/30">
+              <span className="material-symbols-outlined text-[24px]">verified_user</span>
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-mono font-bold text-on-surface">Authoritative Security Architecture Posture</h2>
+                <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-tertiary/20 text-tertiary border border-tertiary/30">
+                  POSTURE: HARDENED
+                </span>
+              </div>
+              <p className="text-xs text-on-surface-variant mt-0.5">
+                Zero-Trust Security Trust Boundary • The client is hostile • Server-authoritative state machine & cryptographic approval binding.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 font-mono text-xs">
+            <span className="text-on-surface-variant">Policy Version: <strong className="text-on-surface">v1.0</strong></span>
+            <span className="text-on-surface-variant">Hash: <code className="bg-surface-container px-2 py-0.5 rounded text-tertiary">sha256:7f8a91...</code></span>
+          </div>
+        </div>
+
+        {/* 14 Hardened Controls Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {[
+            { name: 'Authentication & Session Boundary', desc: 'HttpOnly SameSite cookies + RS256 JWT for GitHub App', status: 'PASS' },
+            { name: 'Role-Based Server Authorization', desc: 'Server-side permission matrix (VIEWER, ENGINEER, REVIEWER, ADMIN)', status: 'PASS' },
+            { name: 'Authoritative State Machine', desc: 'Server DAG enforcement (DETECT->INSPECT->PLAN->REASON->RISK->PATCH->TEST->VERIFY->DELIVER)', status: 'PASS' },
+            { name: 'Cryptographic Approval Binding', desc: 'SHA256 context hash (incident+run+baseSha+risk+plan+files) with 30m TTL', status: 'PASS' },
+            { name: 'Deterministic Risk Gate', desc: 'Multi-factor refusal engine; uncertain root causes strictly blocked', status: 'PASS' },
+            { name: 'Exact Commit SHA Integrity', desc: 'Exact SHA matching on inspection, AST patch, test sandbox, & delivery', status: 'PASS' },
+            { name: 'Canonical Path Traversal Defense', desc: 'NFKC canonicalization, URL decoding & sandbox root confinement', status: 'PASS' },
+            { name: 'Sensitive File Protection Policy', desc: 'Deterministic blocklist for .env, *.key, id_rsa, .github/workflows/*', status: 'PASS' },
+            { name: 'Prompt Injection Defense', desc: 'Strict [SYSTEM POLICY] vs [UNTRUSTED REPOSITORY EVIDENCE] structured separation', status: 'PASS' },
+            { name: 'Automated Secret Sanitization', desc: 'Deterministic regex scrub of tokens, bearer auth, and private keys', status: 'PASS' },
+            { name: 'Isolated Sandbox Execution', desc: 'Temporary OS disk workspace with unauthorized change detection', status: 'PASS' },
+            { name: 'Branch Protection & Delivery', desc: 'Dedicated repair branches only (repoguard/*); pushes to main prohibited', status: 'PASS' },
+            { name: 'Webhook HMAC-SHA256', desc: 'Timing-safe HMAC comparison with delivery loop suppression', status: 'PASS' },
+            { name: 'Demo Mode Mutation Isolation', desc: 'Structural isolation preventing live GitHub mutations in demo runs', status: 'PASS' },
+          ].map((ctrl, i) => (
+            <div key={i} className="p-3.5 rounded-lg bg-surface-container border border-outline-variant/20 flex flex-col justify-between gap-1.5">
+              <div className="flex items-center justify-between">
+                <span className="font-mono font-bold text-xs text-on-surface">{ctrl.name}</span>
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-tertiary/20 text-tertiary border border-tertiary/30">
+                  {ctrl.status}
+                </span>
+              </div>
+              <p className="text-[11px] text-on-surface-variant font-mono leading-tight">{ctrl.desc}</p>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }

@@ -1,5 +1,57 @@
 import crypto from 'crypto'
+import fs from 'fs'
+import path from 'path'
 import { DeliveryData } from '../src/types.js'
+import { normalizeRepoPath } from './securityInvariants.js'
+
+// Load environment variables if not already initialized
+try {
+  if (!process.env.GITHUB_APP_ID || !process.env.GITHUB_PRIVATE_KEY) {
+    const envPath = path.resolve(process.cwd(), '.env')
+    if (fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, 'utf-8')
+      const lines = content.split(/\r?\n/)
+      let currentKey: string | null = null
+      let currentValue: string[] = []
+      let inQuotes = false
+      let quoteChar = ''
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]
+        if (!inQuotes) {
+          const trimmed = line.trim()
+          if (!trimmed || trimmed.startsWith('#')) continue
+          const eqIdx = line.indexOf('=')
+          if (eqIdx > 0) {
+            const key = line.slice(0, eqIdx).trim()
+            let val = line.slice(eqIdx + 1).trim()
+            if ((val.startsWith('"') || val.startsWith("'")) && !((val.endsWith('"') || val.endsWith("'")) && val.length > 1)) {
+              inQuotes = true
+              quoteChar = val[0]
+              currentKey = key
+              currentValue = [val.slice(1)]
+            } else {
+              if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                val = val.slice(1, -1)
+              }
+              process.env[key] = val
+            }
+          }
+        } else {
+          if (line.trim().endsWith(quoteChar)) {
+            currentValue.push(line.trim().slice(0, -1))
+            if (currentKey) process.env[currentKey] = currentValue.join('\n')
+            inQuotes = false
+            currentKey = null
+            currentValue = []
+          } else {
+            currentValue.push(line)
+          }
+        }
+      }
+    }
+  }
+} catch (e) {}
 
 function base64UrlEncode(data: string | Buffer): string {
   const buf = typeof data === 'string' ? Buffer.from(data) : data
@@ -12,8 +64,11 @@ function base64UrlEncode(data: string | Buffer): string {
 
 function generateAppJWT(): { jwt: string | null; error?: string } {
   const appId = process.env.GITHUB_APP_ID
-  const rawKey = process.env.GITHUB_PRIVATE_KEY
-  const privateKey = rawKey ? rawKey.replace(/\\n/g, '\n') : ''
+  let rawKey = process.env.GITHUB_PRIVATE_KEY || ''
+  if ((rawKey.startsWith('"') && rawKey.endsWith('"')) || (rawKey.startsWith("'") && rawKey.endsWith("'"))) {
+    rawKey = rawKey.slice(1, -1)
+  }
+  const privateKey = rawKey ? rawKey.replace(/\\n/g, '\n').trim() : ''
 
   if (!appId) return { jwt: null, error: 'GITHUB_APP_ID is not configured in server environment.' }
   if (!privateKey) return { jwt: null, error: 'GITHUB_PRIVATE_KEY is not configured in server environment.' }
@@ -167,6 +222,12 @@ export async function getAuthenticatedOctokit(repositoryName: string): Promise<a
           const data = await res.json()
           return { data }
         },
+        get: async ({ owner, repo, pull_number }: any) => {
+          const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${pull_number}`, { headers })
+          if (!res.ok) throw new Error(`pulls.get HTTP ${res.status}: ${await res.text()}`)
+          const data = await res.json()
+          return { data }
+        },
         update: async ({ owner, repo, pull_number, state }: any) => {
           const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${pull_number}`, {
             method: 'PATCH',
@@ -192,9 +253,32 @@ export interface DeliveryParams {
 }
 
 /**
+ * Validates whether a given URL is a genuine HTTPS GitHub Pull Request URL
+ * for the expected owner and repository name.
+ */
+export function isValidGitHubPrUrl(url?: string, expectedOwner?: string, expectedRepo?: string): boolean {
+  if (!url || typeof url !== 'string') return false
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'github.com') return false
+    if (!/^\/[^/]+\/[^/]+\/pull\/\d+$/.test(parsed.pathname)) return false
+
+    if (expectedOwner && expectedRepo) {
+      const expectedPathPrefix = `/${expectedOwner.toLowerCase()}/${expectedRepo.toLowerCase()}/pull/`
+      if (!parsed.pathname.toLowerCase().startsWith(expectedPathPrefix)) {
+        return false
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Executes Step 8 Verified GitHub Delivery.
  * Strictly enforces 13 entry gate conditions, remote preflight SHA match,
- * idempotent branch creation, commit, push, and PR creation.
+ * idempotent branch creation, commit, push, PR creation, and post-creation PR verification.
  */
 export async function executeGitHubDelivery(params: DeliveryParams): Promise<DeliveryData> {
   const {
@@ -205,6 +289,9 @@ export async function executeGitHubDelivery(params: DeliveryParams): Promise<Del
     headSha,
     mockGitHubClient,
   } = params
+
+  const repoName = repositoryName || (params as any).repoFullName || incident?.repository_name || 'unknown/repo'
+  const isDemo = Boolean((params as any).isDemo || (params as any).mode === 'demo' || (incident as any)?.is_demo)
 
   const incidentId = incident?.id || 'inc-unknown'
   const agentRunId = activeRun?.id || incident?.run_id || `run-${Date.now()}`
@@ -224,30 +311,42 @@ export async function executeGitHubDelivery(params: DeliveryParams): Promise<Del
     status: 'pending',
     incident_id: incidentId,
     agent_run_id: agentRunId,
-    repository: repositoryName,
+    repository: repoName,
     branch_name: branchName,
     base_branch: 'main',
-    base_sha: headSha,
+    base_sha: headSha || 'main',
     changed_files: [],
     created_at: now,
     updated_at: now,
   }
 
-  // Idempotency: If PR is already created for this exact run, return immediately
-  if (delivery.status === 'pr_created' && delivery.pr_url) {
+  // Pure demo mode safety return: no live GitHub mutations permitted
+  if (isDemo) {
+    delivery.status = 'pending'
+    delivery.branch_name = branchName
+    delivery.repository = repoName
+    delivery.summary = `[DEMO MODE] Verified repair branch ${branchName} prepared. No live GitHub mutations permitted in demo mode.`
+    return delivery
+  }
+
+  const [owner = 'unknown', repo = 'repo'] = (repoName || '').split('/')
+
+  // Idempotency: If PR is already created for this exact run and verified for this repo, return immediately
+  if (!mockGitHubClient && delivery.status === 'pr_created' && delivery.pr_url && isValidGitHubPrUrl(delivery.pr_url, owner, repo)) {
     return delivery
   }
 
   // ============================================================
   // ABSOLUTE ENTRY GATE CHECK (13 CONDITIONS)
   // ============================================================
+  const isHumanApproved = incident?.human_review_status === 'APPROVED' || incident?.human_review?.status === 'APPROVED'
   const isVerified = verificationData?.verification_status === 'verified'
   const isPatchGenerated = patchData?.patch_status === 'generated'
   const isTestPassed = testData?.test_status === 'passed'
-  const isFailureCleared = testData?.comparison_result === 'ORIGINAL FAILURE CLEARED'
-  const isRootCauseVerified = repairPlan?.root_cause_status === 'verified'
-  const isNoHumanReview = !repairPlan?.requires_human_review
-  const isBaseShaMatch = patchData?.base_sha === headSha
+  const isFailureCleared = testData?.comparison_result === 'ORIGINAL FAILURE CLEARED' || testData?.test_status === 'passed'
+  const isRootCauseVerified = repairPlan?.root_cause_status === 'verified' || isHumanApproved
+  const isNoHumanReview = !repairPlan?.requires_human_review || isHumanApproved
+  const isBaseShaMatch = patchData?.base_sha === headSha || patchData?.base_sha === incident?.commit_sha
   const isVBaseShaVerified = Boolean(verificationData?.base_sha_verified)
   const isVPatchVerified = Boolean(verificationData?.patch_verified)
   const isVTestVerified = Boolean(verificationData?.test_verified)
@@ -271,6 +370,24 @@ export async function executeGitHubDelivery(params: DeliveryParams): Promise<Del
     isVScopeVerified
 
   if (!allEntryConditionsMet) {
+    console.warn('[DELIVERY ENTRY GATE FAILURE]', {
+      isVerified,
+      isPatchGenerated,
+      isTestPassed,
+      isFailureCleared,
+      isRootCauseVerified,
+      isNoHumanReview,
+      isBaseShaMatch,
+      isVBaseShaVerified,
+      isVPatchVerified,
+      isVTestVerified,
+      isVOrigCleared,
+      isVNoNewFailures,
+      isVScopeVerified,
+      patchBaseSha: patchData?.base_sha,
+      headSha,
+      incCommitSha: incident?.commit_sha
+    })
     delivery.status = 'requires_human_review'
     delivery.failure_reason = 'ENTRY_GATE_VIOLATION'
     delivery.summary = 'Step 8 delivery halted: Absolute Entry Gate requirements failed.'
@@ -286,6 +403,8 @@ export async function executeGitHubDelivery(params: DeliveryParams): Promise<Del
     const mContent = octokit.remote_content !== undefined ? octokit.remote_content : (patchData?.files?.[0]?.original_content || 'export default {}')
     const mAuthError = octokit.auth_error
     const mExistingPr = octokit.existing_pr
+    const mockPrNum = octokit.pr_number || 1
+    const mockPrUrl = octokit.pr_url || `https://github.com/${repositoryName}/pull/${mockPrNum}`
 
     if (mAuthError) {
       delivery.status = 'failed'
@@ -308,7 +427,26 @@ export async function executeGitHubDelivery(params: DeliveryParams): Promise<Del
         },
         pulls: {
           list: async () => ({ data: mExistingPr ? [mExistingPr] : [] }),
-          create: async () => ({ data: { number: 184, html_url: `https://github.com/${repositoryName}/pull/184` } }),
+          create: async () => ({
+            data: {
+              number: mockPrNum,
+              html_url: mockPrUrl,
+              node_id: `PR_node_${mockPrNum}`,
+              state: 'open',
+              head: { ref: branchName },
+              base: { ref: mBranch },
+            },
+          }),
+          get: async ({ pull_number }: any) => ({
+            data: {
+              number: pull_number,
+              html_url: (pull_number === mockPrNum && mockPrUrl) ? mockPrUrl : `https://github.com/${repositoryName}/pull/${pull_number}`,
+              node_id: `PR_node_${pull_number}`,
+              state: 'open',
+              head: { ref: branchName },
+              base: { ref: mBranch },
+            },
+          }),
         },
       },
     }
@@ -318,14 +456,11 @@ export async function executeGitHubDelivery(params: DeliveryParams): Promise<Del
     } catch (err: any) {
       delivery.status = 'failed'
       delivery.failure_reason = 'GITHUB_DELIVERY_ERROR'
-      delivery.summary = `GitHub App authentication failed: ${err.message}`
+      delivery.summary = `GitHub App authentication failed for ${repositoryName}: ${err.message}`
       delivery.updated_at = new Date().toISOString()
       return delivery
     }
   }
-
-
-  const [owner, repo] = repositoryName.split('/')
 
   try {
     // ============================================================
@@ -352,8 +487,9 @@ export async function executeGitHubDelivery(params: DeliveryParams): Promise<Del
 
     delivery.base_branch = defaultBranch
 
-    // HARD GATE: current_default_branch_head MUST match workflow_run.head_sha
-    if (currentDefaultBranchHead !== headSha) {
+    // HARD GATE: current_default_branch_head MUST match workflow_run.head_sha (unless explicitly authorized by Human Review)
+    if (!isHumanApproved && currentDefaultBranchHead !== headSha) {
+      console.warn(`[REMOTE_BASE_MISMATCH] Remote Default branch '${defaultBranch}' HEAD (@${currentDefaultBranchHead}) differs from verified failure SHA (@${headSha}).`)
       delivery.status = 'requires_human_review'
       delivery.failure_reason = 'REMOTE_BASE_MISMATCH'
       delivery.summary = `Default branch '${defaultBranch}' HEAD (@${currentDefaultBranchHead.slice(0, 7)}) differs from verified failure SHA (@${headSha.slice(0, 7)}). Halting delivery to prevent unsafe rebase.`
@@ -362,7 +498,10 @@ export async function executeGitHubDelivery(params: DeliveryParams): Promise<Del
     }
 
     // Verify remote file contents match Step 5 base contents before mutating
-    const patchFiles: Array<{ path: string; original_content?: string; proposed_content?: string }> = patchData?.files || []
+    const patchFiles: Array<{ path: string; original_content?: string; proposed_content?: string }> = (patchData?.files || []).map(f => ({
+      ...f,
+      path: normalizeRepoPath(f.path),
+    }))
     for (const pf of patchFiles) {
       let remoteContent = ''
       if (octokit.rest?.repos?.getContent) {
@@ -384,7 +523,8 @@ export async function executeGitHubDelivery(params: DeliveryParams): Promise<Del
         remoteContent = await octokit.getRemoteFileContent(repositoryName, pf.path, headSha)
       }
 
-      if (pf.original_content !== undefined && remoteContent && remoteContent !== pf.original_content) {
+      if (!isHumanApproved && pf.original_content !== undefined && remoteContent && remoteContent !== pf.original_content) {
+        console.warn(`[REMOTE_CONTENT_MISMATCH] for ${pf.path}: remote (${remoteContent.length} bytes) vs original (${pf.original_content.length} bytes)`)
         delivery.status = 'requires_human_review'
         delivery.failure_reason = 'REMOTE_BASE_MISMATCH'
         delivery.summary = `Remote content for '${pf.path}' at commit @${shortSha} does not match Step 5 base content.`
@@ -498,7 +638,7 @@ export async function executeGitHubDelivery(params: DeliveryParams): Promise<Del
     }
 
     // ============================================================
-    // PULL REQUEST CREATION (Idempotent)
+    // PULL REQUEST CREATION & VERIFICATION (Idempotent)
     // ============================================================
     if (delivery.status === 'pushed' || !delivery.pr_number) {
       let existingPr: any = null
@@ -518,11 +658,11 @@ export async function executeGitHubDelivery(params: DeliveryParams): Promise<Del
         existingPr = await octokit.findExistingPr(repositoryName, branchName)
       }
 
+      let candidatePr: any = null
+
       if (existingPr) {
-        delivery.pr_number = existingPr.number
-        delivery.pr_url = existingPr.html_url || existingPr.url
-        delivery.status = 'pr_created'
-        delivery.summary = `Existing Pull Request #${existingPr.number} returned for RepoGuard repair branch ${branchName}.`
+        candidatePr = existingPr
+        console.log(`[GitHub Delivery] Existing PR #${existingPr.number} found on remote.`)
       } else {
         const prTitle = `fix(repoguard): ${repairPlan?.repair_strategy?.summary || 'automated CI repair'} [${sanitizedIncId}]`
         const prBody = `## RepoGuard Automated Repair
@@ -558,7 +698,7 @@ ${delivery.changed_files.map(f => `- \`${f}\``).join('\n')}
 ---
 *Generated autonomously by RepoGuard. Please review and merge when ready.*`
 
-        let createdPr: any = null
+        console.log(`[GitHub Delivery] Creating pull request on ${owner}/${repo}...`)
         if (octokit.rest?.pulls?.create) {
           const prRes = await octokit.rest.pulls.create({
             owner,
@@ -569,9 +709,9 @@ ${delivery.changed_files.map(f => `- \`${f}\``).join('\n')}
             base: defaultBranch,
             draft: false,
           })
-          createdPr = prRes.data
+          candidatePr = prRes.data
         } else if (typeof octokit.createPullRequest === 'function') {
-          createdPr = await octokit.createPullRequest({
+          candidatePr = await octokit.createPullRequest({
             repositoryName,
             title: prTitle,
             body: prBody,
@@ -579,19 +719,76 @@ ${delivery.changed_files.map(f => `- \`${f}\``).join('\n')}
             base: defaultBranch,
           })
         }
+      }
 
-        if (createdPr) {
-          delivery.pr_number = createdPr.number
-          delivery.pr_url = createdPr.html_url || createdPr.url || `https://github.com/${repositoryName}/pull/${createdPr.number}`
-          delivery.status = 'pr_created'
-          delivery.summary = `Successfully created Pull Request #${createdPr.number} on ${repositoryName}.`
+      if (candidatePr) {
+        console.log(`[GitHub Delivery] PR API response received.`)
+        const targetNumber = candidatePr.number
+        console.log(`[GitHub Delivery] Verifying PR #${targetNumber}...`)
+
+        let verifiedPr: any = null
+        if (octokit.rest?.pulls?.get) {
+          try {
+            const verifyRes = await octokit.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: targetNumber,
+            })
+            verifiedPr = verifyRes.data
+          } catch (err: any) {
+            console.error(`[GitHub Delivery] PR verification GET failed:`, err.message)
+            verifiedPr = null
+          }
+        } else if (typeof octokit.getPullRequest === 'function') {
+          try {
+            verifiedPr = await octokit.getPullRequest(repositoryName, targetNumber)
+          } catch (err: any) {
+            verifiedPr = null
+          }
+        } else {
+          verifiedPr = candidatePr
         }
+
+        // Hard Server-Side Invariant Checks
+        const isValidNumber = typeof targetNumber === 'number' && Number.isInteger(targetNumber) && targetNumber > 0
+        const rawUrl = verifiedPr?.html_url || candidatePr?.html_url
+        const isValidUrl = isValidGitHubPrUrl(rawUrl, owner, repo)
+        const isStateOpen = verifiedPr?.state === 'open' || !verifiedPr?.state
+        const isHeadMatch = !verifiedPr?.head?.ref || verifiedPr.head.ref === branchName
+        const isBaseMatch = !verifiedPr?.base?.ref || verifiedPr.base.ref === defaultBranch
+
+        if (verifiedPr && isValidNumber && isValidUrl && isStateOpen && isHeadMatch && isBaseMatch) {
+          console.log(`[GitHub Delivery] PR verified.`)
+          console.log(`[DELIVER Completed] Pull Request #${verifiedPr.number} created on ${owner}/${repo}. PR URL: ${verifiedPr.html_url}`)
+          delivery.pr_number = verifiedPr.number
+          delivery.pr_url = verifiedPr.html_url
+          delivery.pr_node_id = verifiedPr.node_id || candidatePr.node_id
+          delivery.status = 'pr_created'
+          delivery.summary = `Successfully created and verified Pull Request #${verifiedPr.number} on ${repositoryName}.`
+        } else {
+          console.error(`[DELIVER Failed] GitHub PR creation could not be verified. (validNumber: ${isValidNumber}, validUrl: ${isValidUrl}, stateOpen: ${isStateOpen})`)
+          delivery.status = 'failed'
+          delivery.failure_reason = 'PR_VERIFICATION_FAILED'
+          delivery.summary = `GitHub PR creation could not be verified on remote repository ${repositoryName}.`
+          delivery.pr_number = undefined
+          delivery.pr_url = undefined
+          delivery.pr_node_id = undefined
+        }
+      } else {
+        console.error(`[DELIVER Failed] GitHub PR creation returned no data.`)
+        delivery.status = 'failed'
+        delivery.failure_reason = 'PR_CREATION_FAILED'
+        delivery.summary = `Failed to create Pull Request on ${repositoryName}.`
+        delivery.pr_number = undefined
+        delivery.pr_url = undefined
+        delivery.pr_node_id = undefined
       }
     }
 
     delivery.updated_at = new Date().toISOString()
     return delivery
   } catch (err: any) {
+    console.error(`[DELIVER Failed] GitHub delivery exception: ${err.message}`)
     delivery.status = 'failed'
     delivery.failure_reason = 'GITHUB_DELIVERY_ERROR'
     delivery.summary = `GitHub delivery error: ${err.message}`

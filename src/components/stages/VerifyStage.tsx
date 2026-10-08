@@ -28,10 +28,23 @@ export default function VerifyStage({ incident }: VerifyStageProps) {
     { name: 'INCIDENT_CONSISTENCY', status: 'passed', evidence: 'Workflow run ID is consistent across incident telemetry' },
   ]
 
-  const checks = verificationData?.checks || defaultChecks
-  const overallStatus = verificationData?.verification_status || 'verified'
-  const summary = verificationData?.summary || 'Deterministic Verification Gate PASSED. All verification checks verified.'
-  const blockingReasons = verificationData?.blocking_reasons || []
+  const isHumanReviewRequired = incident?.human_review_status === 'PENDING' ||
+    (incident?.repair_plan_data?.requires_human_review === true && incident?.human_review_status !== 'APPROVED') ||
+    (incident?.risk_assessment?.decision === 'BLOCKED' && incident?.human_review_status !== 'APPROVED') ||
+    (incident as any)?.requires_human_review === true
+
+  const checks: VerificationCheck[] = verificationData?.checks || (isHumanReviewRequired ? [] : defaultChecks)
+
+  const overallStatus = isHumanReviewRequired
+    ? 'requires_human_review'
+    : (verificationData?.verification_status || 'verified')
+
+  const summary = isHumanReviewRequired
+    ? 'Deterministic Verification is LOCKED — Waiting for human review approval at REASON stage.'
+    : (verificationData?.summary || 'Deterministic Verification Gate PASSED. All verification checks verified.')
+  const blockingReasons = isHumanReviewRequired
+    ? ['Pipeline halted at REASON stage due to risk policy. Human review approval required.']
+    : (verificationData?.blocking_reasons || [])
 
   const checkLabelMap: Record<string, string> = {
     BASE_SHA: 'Exact failure SHA',

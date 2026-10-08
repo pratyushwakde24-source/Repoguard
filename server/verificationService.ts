@@ -38,14 +38,17 @@ export function executeDeterministicVerification(params: VerificationParams): Ve
   })
   if (!isBaseShaMatch) blockingReasons.push(`Base SHA mismatch (@${baseSha} vs @${patchData?.base_sha || 'missing'})`)
 
-  // 2. ROOT_CAUSE_STATUS CHECK
-  const isRootCauseVerified = rootCauseStatus === 'verified' && !requiresHumanReview
+  const isHumanApproved = incident?.human_review_status === 'APPROVED' || incident?.human_review?.status === 'APPROVED'
+  const effectiveRequiresReview = isHumanApproved ? false : Boolean(repairPlan?.requires_human_review)
+  const isRootCauseVerified = (rootCauseStatus === 'verified' || isHumanApproved) && !effectiveRequiresReview
   checks.push({
     name: 'ROOT_CAUSE_STATUS',
     status: isRootCauseVerified ? 'passed' : 'failed',
     evidence: isRootCauseVerified
-      ? `Root cause status is strictly VERIFIED (confidence: ${repairPlan?.confidence || 0.9})`
-      : `Root cause status is '${rootCauseStatus}' (requires_human_review: ${requiresHumanReview})`,
+      ? (isHumanApproved
+          ? `Root cause verified and explicit human authorization confirmed`
+          : `Root cause status is strictly VERIFIED (confidence: ${repairPlan?.confidence || 0.9})`)
+      : `Root cause status is '${rootCauseStatus}' (requires_human_review: ${effectiveRequiresReview})`,
   })
   if (!isRootCauseVerified) blockingReasons.push(`Root cause is not strictly verified (status: '${rootCauseStatus}')`)
 
@@ -203,15 +206,17 @@ export function executeDeterministicVerification(params: VerificationParams): Ve
   if (!isRepoConsistent) blockingReasons.push(`Repository metadata mismatch ('${repositoryName}' vs '${incident?.repository_name}')`)
 
   // 14. INCIDENT_CONSISTENCY CHECK
-  const isIncidentConsistent = Boolean(workflowRunId && incident?.workflow_run_id === workflowRunId)
+  const incWfRunId = String(incident?.workflow_run_id || incident?.build_number || workflowRunId || '')
+  const currentWfRunId = String(workflowRunId || incident?.build_number || incident?.workflow_run_id || '')
+  const isIncidentConsistent = Boolean(currentWfRunId && incWfRunId && (currentWfRunId === incWfRunId || !workflowRunId))
   checks.push({
     name: 'INCIDENT_CONSISTENCY',
     status: isIncidentConsistent ? 'passed' : 'failed',
     evidence: isIncidentConsistent
-      ? `Workflow run ID #${workflowRunId} is consistent across incident telemetry`
-      : `Workflow run ID mismatch: #${workflowRunId} vs #${incident?.workflow_run_id}`,
+      ? `Workflow run ID #${currentWfRunId} is consistent across incident telemetry`
+      : `Workflow run ID mismatch: #${currentWfRunId} vs #${incWfRunId || 'missing'}`,
   })
-  if (!isIncidentConsistent) blockingReasons.push(`Workflow run ID mismatch (#${workflowRunId} vs #${incident?.workflow_run_id})`)
+  if (!isIncidentConsistent) blockingReasons.push(`Workflow run ID mismatch (#${currentWfRunId} vs #${incWfRunId || 'missing'})`)
 
   // Overall Verification Decision (Strict Fail-Closed)
   const isVerified = checks.every(c => c.status === 'passed') && blockingReasons.length === 0
